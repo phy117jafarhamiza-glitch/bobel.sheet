@@ -12,7 +12,19 @@ st.title("نظام توليد الأسئلة الامتحانية")
 
 TEMPLATE_FILE = 'نموذج الاسئلة 30سؤال.docx' 
 
-# --- دوال النسخ والتوسيع ---
+# --- دالة قوية لضبط الاتجاه (يمين لليسار) ---
+def force_rtl(paragraph):
+    """تجبر الفقرة والنص بداخلها على الاتجاه العربي"""
+    # 1. ضبط محاذاة الفقرة لليمين
+    paragraph.alignment = WD_ALIGN_PARAGRAPH.RIGHT
+    # 2. إخبار الوورد أن الفقرة عربية (Bidi)
+    paragraph.paragraph_format.bidi = True
+    # 3. إجبار كل جملة داخل الفقرة على خاصية RTL (مهم جداً للخيارات)
+    if paragraph.runs:
+        for run in paragraph.runs:
+            run.font.rtl = True
+
+# --- دوال التوسيع ---
 def add_row_copy(table, row_idx):
     if row_idx < 0 or row_idx >= len(table.rows): return
     row_copy = copy.deepcopy(table.rows[row_idx]._tr)
@@ -34,12 +46,7 @@ def expand_tf_table(table, current_slots, target_slots):
         for _ in range(needed):
             add_row_copy(table, last_row_idx)
 
-# --- دوال المساعدة ---
-def set_rtl(paragraph):
-    """دالة لضبط اتجاه النص من اليمين لليسار"""
-    paragraph.alignment = WD_ALIGN_PARAGRAPH.RIGHT
-    paragraph.paragraph_format.bidi = True  # هذا هو السطر السحري لحل مشكلة قلب الكلمات
-
+# --- دوال عامة ---
 def set_document_font_size(doc, size):
     for p in doc.paragraphs:
         for run in p.runs: run.font.size = Pt(size)
@@ -55,9 +62,7 @@ def is_header_table(table):
         for row in table.rows:
             for cell in row.cells: txt += cell.text
     except: pass
-    if "جامعة" in txt or "الامتحان" in txt or "الكلية" in txt:
-        return True
-    return False
+    return ("جامعة" in txt or "الامتحان" in txt)
 
 def read_questions(file):
     doc = Document(file)
@@ -111,20 +116,18 @@ def generate_exam(mcq_data, tf_data, template_path, target_mcq_count, target_tf_
         if "A" in row_txt and "B" in row_txt and "..." in row_txt:
             current_slots = 0
             for row in table.rows:
-                if "A" in "".join([c.text for c in row.cells]):
-                    current_slots += 1
+                if "A" in "".join([c.text for c in row.cells]): current_slots += 1
             if target_mcq_count > current_slots:
                 expand_mcq_table(table, current_slots, target_mcq_count)
 
         elif "(" in row_txt and ")" in row_txt and "..." in row_txt and "A" not in row_txt:
             current_slots = 0
             for row in table.rows:
-                if "(" in "".join([c.text for c in row.cells]):
-                    current_slots += 1
+                if "(" in "".join([c.text for c in row.cells]): current_slots += 1
             if target_tf_count > current_slots:
                 expand_tf_table(table, current_slots, target_tf_count)
 
-    # === المرحلة 2: التعبئة مع ضبط الاتجاه ===
+    # === المرحلة 2: التعبئة وتصحيح الاتجاه ===
     for table in doc.tables:
         if is_header_table(table): continue
 
@@ -140,7 +143,7 @@ def generate_exam(mcq_data, tf_data, template_path, target_mcq_count, target_tf_
                 cells = row.cells
                 full_row = "".join([c.text for c in cells])
                 
-                # سؤال
+                # أ) تعبئة السؤال
                 if "..." in full_row and "A" not in full_row:
                     if mcq_idx < len(final_mcq):
                         current_opts = final_mcq[mcq_idx]['opts']
@@ -151,24 +154,25 @@ def generate_exam(mcq_data, tf_data, template_path, target_mcq_count, target_tf_
                             for p in cell.paragraphs:
                                 if "..." in p.text:
                                     p.text = re.sub(r'\.{3,}', q_text, p.text)
-                                    set_rtl(p) # ضبط اتجاه السؤال
+                                    force_rtl(p) # تطبيق الاتجاه على السؤال
                 
-                # خيارات
+                # ب) تعبئة الخيارات (الإصلاح هنا)
                 elif "A" in full_row and current_shuffled_opts:
                     opt_map = {'A': current_shuffled_opts[0], 'B': current_shuffled_opts[1], 'C': current_shuffled_opts[2], 'D': current_shuffled_opts[3], 'E': current_shuffled_opts[4]}
                     for i in range(len(cells)):
                         ct = cells[i].text.strip().replace(",", "")
                         if ct in opt_map and i+1 < len(cells):
                             target_cell = cells[i+1]
-                            # مسح المحتوى القديم وكتابة الجديد بشكل نظيف
-                            target_cell.text = opt_map[ct]
-                            # ضبط الاتجاه لكل فقرة داخل الخلية
+                            target_cell.text = opt_map[ct] # كتابة النص
+                            
+                            # نمر على كل فقرة في الخلية ونجبرها على العربية
                             for p in target_cell.paragraphs:
-                                set_rtl(p)
+                                force_rtl(p)
+                                
                     mcq_idx += 1
                     current_shuffled_opts = None
 
-        # صح وخطأ
+        # الصح والخطأ
         elif "(" in row_txt_sample and ")" in row_txt_sample and "A" not in row_txt_sample:
             for row in table.rows:
                 if tf_idx < len(final_tf):
@@ -178,7 +182,7 @@ def generate_exam(mcq_data, tf_data, template_path, target_mcq_count, target_tf_
                             for p in cell.paragraphs:
                                 if "..." in p.text:
                                     p.text = re.sub(r'\.{3,}', final_tf[tf_idx], p.text)
-                                    set_rtl(p) # ضبط اتجاه السؤال
+                                    force_rtl(p) # تطبيق الاتجاه على السؤال
                          tf_idx += 1
 
     set_document_font_size(doc, 10)
@@ -207,7 +211,7 @@ if uploaded_file:
         if st.button("توليد الامتحان"):
             try:
                 final_file = generate_exam(all_mcq, all_tf, TEMPLATE_FILE, mcq_count, tf_count)
-                st.download_button("📥 تحميل الملف", final_file, "Exam_RTL_Fixed.docx", "application/vnd.openxmlformats-officedocument.wordprocessingml.document")
+                st.download_button("📥 تحميل الملف", final_file, "Exam_Fixed_Final.docx", "application/vnd.openxmlformats-officedocument.wordprocessingml.document")
                 st.success("تم التوليد بنجاح!")
             except Exception as e:
                 st.error(f"خطأ: {e}")
