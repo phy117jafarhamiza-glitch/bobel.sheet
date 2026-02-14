@@ -1,6 +1,7 @@
 import streamlit as st
 from docx import Document
 from docx.shared import Pt
+from docx.enum.text import WD_ALIGN_PARAGRAPH
 import copy
 import random
 from io import BytesIO
@@ -13,16 +14,13 @@ TEMPLATE_FILE = 'نموذج الاسئلة 30سؤال.docx'
 
 # --- دوال النسخ والتوسيع ---
 def add_row_copy(table, row_idx):
-    """نسخ صف وإضافته للجدول"""
     if row_idx < 0 or row_idx >= len(table.rows): return
     row_copy = copy.deepcopy(table.rows[row_idx]._tr)
     table._tbl.append(row_copy)
 
 def expand_mcq_table(table, current_slots, target_slots):
-    """توسيع جدول الاختياري"""
     needed = target_slots - current_slots
     if needed > 0:
-        # نفترض آخر سطرين هما النمط المتكرر
         last_q_row_idx = len(table.rows) - 2
         last_opt_row_idx = len(table.rows) - 1
         for _ in range(needed):
@@ -30,7 +28,6 @@ def expand_mcq_table(table, current_slots, target_slots):
             add_row_copy(table, last_opt_row_idx)
 
 def expand_tf_table(table, current_slots, target_slots):
-    """توسيع جدول الصح والخطأ"""
     needed = target_slots - current_slots
     if needed > 0:
         last_row_idx = len(table.rows) - 1
@@ -38,6 +35,11 @@ def expand_tf_table(table, current_slots, target_slots):
             add_row_copy(table, last_row_idx)
 
 # --- دوال المساعدة ---
+def set_rtl(paragraph):
+    """دالة لضبط اتجاه النص من اليمين لليسار"""
+    paragraph.alignment = WD_ALIGN_PARAGRAPH.RIGHT
+    paragraph.paragraph_format.bidi = True  # هذا هو السطر السحري لحل مشكلة قلب الكلمات
+
 def set_document_font_size(doc, size):
     for p in doc.paragraphs:
         for run in p.runs: run.font.size = Pt(size)
@@ -48,14 +50,11 @@ def set_document_font_size(doc, size):
                     for run in p.runs: run.font.size = Pt(size)
 
 def is_header_table(table):
-    """فحص هل الجدول هو جدول ترويسة (يجب تجاهله)"""
     txt = ""
     try:
         for row in table.rows:
             for cell in row.cells: txt += cell.text
     except: pass
-    
-    # كلمات دلالية موجودة في الترويسة فقط
     if "جامعة" in txt or "الامتحان" in txt or "الكلية" in txt:
         return True
     return False
@@ -100,19 +99,15 @@ def generate_exam(mcq_data, tf_data, template_path, target_mcq_count, target_tf_
     tf_idx = 0
     current_shuffled_opts = None 
     
-    # === المرحلة 1: التوسيع الذكي (مع تجاهل الترويسة) ===
+    # === المرحلة 1: التوسيع ===
     for table in doc.tables:
-        if is_header_table(table):
-            continue  # تخطي الترويسة فوراً
-            
-        # فحص محتوى الجدول
+        if is_header_table(table): continue
         row_txt = ""
         try:
             for row in table.rows[:3]: 
                 for cell in row.cells: row_txt += cell.text
         except: pass
 
-        # 1. جدول الاختياري (يجب أن يحتوي A و B ونقاط)
         if "A" in row_txt and "B" in row_txt and "..." in row_txt:
             current_slots = 0
             for row in table.rows:
@@ -121,18 +116,15 @@ def generate_exam(mcq_data, tf_data, template_path, target_mcq_count, target_tf_
             if target_mcq_count > current_slots:
                 expand_mcq_table(table, current_slots, target_mcq_count)
 
-        # 2. جدول الصح والخطأ (يجب أن يحتوي أقواس ونقاط)
-        elif "(" in row_txt and ")" in row_txt and "..." in row_txt:
-            # تأكيد إضافي: الصح والخطأ لا يحتوي على A, B, C كخيارات
-            if "A" not in row_txt: 
-                current_slots = 0
-                for row in table.rows:
-                    if "(" in "".join([c.text for c in row.cells]):
-                        current_slots += 1
-                if target_tf_count > current_slots:
-                    expand_tf_table(table, current_slots, target_tf_count)
+        elif "(" in row_txt and ")" in row_txt and "..." in row_txt and "A" not in row_txt:
+            current_slots = 0
+            for row in table.rows:
+                if "(" in "".join([c.text for c in row.cells]):
+                    current_slots += 1
+            if target_tf_count > current_slots:
+                expand_tf_table(table, current_slots, target_tf_count)
 
-    # === المرحلة 2: التعبئة ===
+    # === المرحلة 2: التعبئة مع ضبط الاتجاه ===
     for table in doc.tables:
         if is_header_table(table): continue
 
@@ -142,13 +134,13 @@ def generate_exam(mcq_data, tf_data, template_path, target_mcq_count, target_tf_
                 for cell in row.cells: row_txt_sample += cell.text
         except: pass
 
-        # تعبئة الاختياري
+        # الاختياري
         if "A" in row_txt_sample and "B" in row_txt_sample:
             for row in table.rows:
                 cells = row.cells
                 full_row = "".join([c.text for c in cells])
                 
-                # سطر السؤال
+                # سؤال
                 if "..." in full_row and "A" not in full_row:
                     if mcq_idx < len(final_mcq):
                         current_opts = final_mcq[mcq_idx]['opts']
@@ -159,19 +151,24 @@ def generate_exam(mcq_data, tf_data, template_path, target_mcq_count, target_tf_
                             for p in cell.paragraphs:
                                 if "..." in p.text:
                                     p.text = re.sub(r'\.{3,}', q_text, p.text)
+                                    set_rtl(p) # ضبط اتجاه السؤال
                 
-                # سطر الخيارات
+                # خيارات
                 elif "A" in full_row and current_shuffled_opts:
                     opt_map = {'A': current_shuffled_opts[0], 'B': current_shuffled_opts[1], 'C': current_shuffled_opts[2], 'D': current_shuffled_opts[3], 'E': current_shuffled_opts[4]}
                     for i in range(len(cells)):
                         ct = cells[i].text.strip().replace(",", "")
                         if ct in opt_map and i+1 < len(cells):
-                            cells[i+1].text = opt_map[ct]
-                            for p in cells[i+1].paragraphs: p.alignment = 2
+                            target_cell = cells[i+1]
+                            # مسح المحتوى القديم وكتابة الجديد بشكل نظيف
+                            target_cell.text = opt_map[ct]
+                            # ضبط الاتجاه لكل فقرة داخل الخلية
+                            for p in target_cell.paragraphs:
+                                set_rtl(p)
                     mcq_idx += 1
                     current_shuffled_opts = None
 
-        # تعبئة الصح والخطأ
+        # صح وخطأ
         elif "(" in row_txt_sample and ")" in row_txt_sample and "A" not in row_txt_sample:
             for row in table.rows:
                 if tf_idx < len(final_tf):
@@ -181,6 +178,7 @@ def generate_exam(mcq_data, tf_data, template_path, target_mcq_count, target_tf_
                             for p in cell.paragraphs:
                                 if "..." in p.text:
                                     p.text = re.sub(r'\.{3,}', final_tf[tf_idx], p.text)
+                                    set_rtl(p) # ضبط اتجاه السؤال
                          tf_idx += 1
 
     set_document_font_size(doc, 10)
@@ -209,7 +207,7 @@ if uploaded_file:
         if st.button("توليد الامتحان"):
             try:
                 final_file = generate_exam(all_mcq, all_tf, TEMPLATE_FILE, mcq_count, tf_count)
-                st.download_button("📥 تحميل الملف", final_file, "Exam_Fixed.docx", "application/vnd.openxmlformats-officedocument.wordprocessingml.document")
+                st.download_button("📥 تحميل الملف", final_file, "Exam_RTL_Fixed.docx", "application/vnd.openxmlformats-officedocument.wordprocessingml.document")
                 st.success("تم التوليد بنجاح!")
             except Exception as e:
                 st.error(f"خطأ: {e}")
