@@ -12,14 +12,16 @@ st.title("نظام توليد الأسئلة الامتحانية")
 
 TEMPLATE_FILE = 'نموذج الاسئلة 30سؤال.docx' 
 
-# --- دالة قوية لضبط الاتجاه (يمين لليسار) ---
+# --- دالة صارمة لضبط المحاذاة والاتجاه لليمين ---
 def force_rtl(paragraph):
-    """تجبر الفقرة والنص بداخلها على الاتجاه العربي"""
-    # 1. ضبط محاذاة الفقرة لليمين
+    """تجبر الفقرة على المحاذاة لليمين واتجاه النص العربي"""
+    # 1. ضبط المحاذاة لليمين (أهم خطوة لمشكلتك)
     paragraph.alignment = WD_ALIGN_PARAGRAPH.RIGHT
-    # 2. إخبار الوورد أن الفقرة عربية (Bidi)
+    
+    # 2. ضبط اتجاه النص (يمين لليسار) لضمان ترتيب الكلمات
     paragraph.paragraph_format.bidi = True
-    # 3. إجبار كل جملة داخل الفقرة على خاصية RTL (مهم جداً للخيارات)
+    
+    # 3. التأكد من أن الخط معرف كعربي
     if paragraph.runs:
         for run in paragraph.runs:
             run.font.rtl = True
@@ -127,7 +129,7 @@ def generate_exam(mcq_data, tf_data, template_path, target_mcq_count, target_tf_
             if target_tf_count > current_slots:
                 expand_tf_table(table, current_slots, target_tf_count)
 
-    # === المرحلة 2: التعبئة وتصحيح الاتجاه ===
+    # === المرحلة 2: التعبئة مع فرض المحاذاة لليمين ===
     for table in doc.tables:
         if is_header_table(table): continue
 
@@ -143,7 +145,7 @@ def generate_exam(mcq_data, tf_data, template_path, target_mcq_count, target_tf_
                 cells = row.cells
                 full_row = "".join([c.text for c in cells])
                 
-                # أ) تعبئة السؤال
+                # --- أ) تعبئة السؤال (تم إضافة force_rtl هنا) ---
                 if "..." in full_row and "A" not in full_row:
                     if mcq_idx < len(final_mcq):
                         current_opts = final_mcq[mcq_idx]['opts']
@@ -154,21 +156,18 @@ def generate_exam(mcq_data, tf_data, template_path, target_mcq_count, target_tf_
                             for p in cell.paragraphs:
                                 if "..." in p.text:
                                     p.text = re.sub(r'\.{3,}', q_text, p.text)
-                                    force_rtl(p) # تطبيق الاتجاه على السؤال
+                                    force_rtl(p) # <--- هذا السطر سيجبر السؤال أن يكون يميناً
                 
-                # ب) تعبئة الخيارات (الإصلاح هنا)
+                # --- ب) تعبئة الخيارات ---
                 elif "A" in full_row and current_shuffled_opts:
                     opt_map = {'A': current_shuffled_opts[0], 'B': current_shuffled_opts[1], 'C': current_shuffled_opts[2], 'D': current_shuffled_opts[3], 'E': current_shuffled_opts[4]}
                     for i in range(len(cells)):
                         ct = cells[i].text.strip().replace(",", "")
                         if ct in opt_map and i+1 < len(cells):
                             target_cell = cells[i+1]
-                            target_cell.text = opt_map[ct] # كتابة النص
-                            
-                            # نمر على كل فقرة في الخلية ونجبرها على العربية
+                            target_cell.text = opt_map[ct]
                             for p in target_cell.paragraphs:
-                                force_rtl(p)
-                                
+                                force_rtl(p) # تطبيق المحاذاة على الخيارات أيضاً
                     mcq_idx += 1
                     current_shuffled_opts = None
 
@@ -182,7 +181,7 @@ def generate_exam(mcq_data, tf_data, template_path, target_mcq_count, target_tf_
                             for p in cell.paragraphs:
                                 if "..." in p.text:
                                     p.text = re.sub(r'\.{3,}', final_tf[tf_idx], p.text)
-                                    force_rtl(p) # تطبيق الاتجاه على السؤال
+                                    force_rtl(p) # <--- تطبيق المحاذاة على سؤال الصح والخطأ
                          tf_idx += 1
 
     set_document_font_size(doc, 10)
@@ -211,7 +210,7 @@ if uploaded_file:
         if st.button("توليد الامتحان"):
             try:
                 final_file = generate_exam(all_mcq, all_tf, TEMPLATE_FILE, mcq_count, tf_count)
-                st.download_button("📥 تحميل الملف", final_file, "Exam_Fixed_Final.docx", "application/vnd.openxmlformats-officedocument.wordprocessingml.document")
+                st.download_button("📥 تحميل الملف", final_file, "Exam_Right_Aligned.docx", "application/vnd.openxmlformats-officedocument.wordprocessingml.document")
                 st.success("تم التوليد بنجاح!")
             except Exception as e:
                 st.error(f"خطأ: {e}")
