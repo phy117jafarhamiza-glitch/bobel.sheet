@@ -1,7 +1,6 @@
 import streamlit as st
 from docx import Document
 from docx.shared import Pt
-from docx.oxml import OxmlElement
 import copy
 import random
 from io import BytesIO
@@ -12,44 +11,54 @@ st.title("نظام توليد الأسئلة الامتحانية")
 
 TEMPLATE_FILE = 'نموذج الاسئلة 30سؤال.docx' 
 
-# --- دوال مساعدة لتكرار الصفوف (التوسيع التلقائي) ---
+# --- دوال النسخ والتوسيع ---
 def add_row_copy(table, row_idx):
-    """تقوم بنسخ صف محدد وإضافته لآخر الجدول"""
+    """نسخ صف وإضافته للجدول"""
+    if row_idx < 0 or row_idx >= len(table.rows): return
     row_copy = copy.deepcopy(table.rows[row_idx]._tr)
     table._tbl.append(row_copy)
 
 def expand_mcq_table(table, current_slots, target_slots):
-    """توسيع جدول الاختياري (ينسخ سطرين: سؤال + خيارات)"""
+    """توسيع جدول الاختياري"""
     needed = target_slots - current_slots
     if needed > 0:
-        # نفترض أن آخر سطرين هما (سؤال + خيارات)
-        # ننسخ آخر صفين ونكررهم
+        # نفترض آخر سطرين هما النمط المتكرر
         last_q_row_idx = len(table.rows) - 2
         last_opt_row_idx = len(table.rows) - 1
-        
         for _ in range(needed):
-            add_row_copy(table, last_q_row_idx) # نسخ سطر السؤال
-            add_row_copy(table, last_opt_row_idx) # نسخ سطر الخيارات
+            add_row_copy(table, last_q_row_idx)
+            add_row_copy(table, last_opt_row_idx)
 
 def expand_tf_table(table, current_slots, target_slots):
-    """توسيع جدول الصح والخطأ (ينسخ سطر واحد)"""
+    """توسيع جدول الصح والخطأ"""
     needed = target_slots - current_slots
     if needed > 0:
         last_row_idx = len(table.rows) - 1
         for _ in range(needed):
             add_row_copy(table, last_row_idx)
 
-# --- الدوال الأساسية ---
+# --- دوال المساعدة ---
 def set_document_font_size(doc, size):
     for p in doc.paragraphs:
-        for run in p.runs:
-            run.font.size = Pt(size)
+        for run in p.runs: run.font.size = Pt(size)
     for table in doc.tables:
         for row in table.rows:
             for cell in row.cells:
                 for p in cell.paragraphs:
-                    for run in p.runs:
-                        run.font.size = Pt(size)
+                    for run in p.runs: run.font.size = Pt(size)
+
+def is_header_table(table):
+    """فحص هل الجدول هو جدول ترويسة (يجب تجاهله)"""
+    txt = ""
+    try:
+        for row in table.rows:
+            for cell in row.cells: txt += cell.text
+    except: pass
+    
+    # كلمات دلالية موجودة في الترويسة فقط
+    if "جامعة" in txt or "الامتحان" in txt or "الكلية" in txt:
+        return True
+    return False
 
 def read_questions(file):
     doc = Document(file)
@@ -61,11 +70,9 @@ def read_questions(file):
     while i < len(lines):
         line = lines[i]
         if "# اختياري" in line:
-            current_mode = "MCQ"
-            i += 1; continue
+            current_mode = "MCQ"; i += 1; continue
         elif "# صح وخطأ" in line:
-            current_mode = "TF"
-            i += 1; continue
+            current_mode = "TF"; i += 1; continue
             
         if current_mode == "MCQ":
             if i + 5 < len(lines):
@@ -83,11 +90,9 @@ def read_questions(file):
 def generate_exam(mcq_data, tf_data, template_path, target_mcq_count, target_tf_count):
     doc = Document(template_path)
     
-    # خلط الأسئلة
     random.shuffle(mcq_data)
     random.shuffle(tf_data)
     
-    # قص العدد المطلوب فقط
     final_mcq = mcq_data[:target_mcq_count]
     final_tf = tf_data[:target_tf_count]
     
@@ -95,59 +100,56 @@ def generate_exam(mcq_data, tf_data, template_path, target_mcq_count, target_tf_
     tf_idx = 0
     current_shuffled_opts = None 
     
-    # --- المرحلة 1: توسيع الجداول لتكفي العدد المطلوب ---
+    # === المرحلة 1: التوسيع الذكي (مع تجاهل الترويسة) ===
     for table in doc.tables:
-        row_text_sample = ""
+        if is_header_table(table):
+            continue  # تخطي الترويسة فوراً
+            
+        # فحص محتوى الجدول
+        row_txt = ""
         try:
-            for row in table.rows[:2]:
-                for cell in row.cells: row_text_sample += cell.text
+            for row in table.rows[:3]: 
+                for cell in row.cells: row_txt += cell.text
         except: pass
 
-        # جدول الاختياري
-        if "A" in row_text_sample and ("B" in row_text_sample or "," in row_text_sample):
-            # نحسب عدد الأسئلة الموجودة حالياً في الجدول
-            # كل سؤال يأخذ سطرين (سؤال + خيارات)
-            # سنقوم بعد الصفوف التي تحتوي "A" (صفوف الخيارات)
+        # 1. جدول الاختياري (يجب أن يحتوي A و B ونقاط)
+        if "A" in row_txt and "B" in row_txt and "..." in row_txt:
             current_slots = 0
             for row in table.rows:
                 if "A" in "".join([c.text for c in row.cells]):
                     current_slots += 1
-            
-            # التوسيع
             if target_mcq_count > current_slots:
                 expand_mcq_table(table, current_slots, target_mcq_count)
 
-        # جدول الصح والخطأ
-        else:
-            is_tf = False
-            for row in table.rows:
-                if "(" in "".join([c.text for c in row.cells]): is_tf = True; break
-            
-            if is_tf:
+        # 2. جدول الصح والخطأ (يجب أن يحتوي أقواس ونقاط)
+        elif "(" in row_txt and ")" in row_txt and "..." in row_txt:
+            # تأكيد إضافي: الصح والخطأ لا يحتوي على A, B, C كخيارات
+            if "A" not in row_txt: 
                 current_slots = 0
                 for row in table.rows:
                     if "(" in "".join([c.text for c in row.cells]):
                         current_slots += 1
-                
-                # التوسيع
                 if target_tf_count > current_slots:
                     expand_tf_table(table, current_slots, target_tf_count)
 
-    # --- المرحلة 2: التعبئة ---
+    # === المرحلة 2: التعبئة ===
     for table in doc.tables:
-        row_text_sample = ""
+        if is_header_table(table): continue
+
+        row_txt_sample = ""
         try:
-            for row in table.rows[:2]:
-                for cell in row.cells: row_text_sample += cell.text
+            for row in table.rows[:3]: 
+                for cell in row.cells: row_txt_sample += cell.text
         except: pass
 
-        # الاختياري
-        if "A" in row_text_sample and ("B" in row_text_sample or "," in row_text_sample):
+        # تعبئة الاختياري
+        if "A" in row_txt_sample and "B" in row_txt_sample:
             for row in table.rows:
                 cells = row.cells
-                row_text = "".join([c.text for c in cells])
+                full_row = "".join([c.text for c in cells])
                 
-                if "..." in row_text and "A" not in row_text:
+                # سطر السؤال
+                if "..." in full_row and "A" not in full_row:
                     if mcq_idx < len(final_mcq):
                         current_opts = final_mcq[mcq_idx]['opts']
                         current_shuffled_opts = list(current_opts)
@@ -158,33 +160,28 @@ def generate_exam(mcq_data, tf_data, template_path, target_mcq_count, target_tf_
                                 if "..." in p.text:
                                     p.text = re.sub(r'\.{3,}', q_text, p.text)
                 
-                elif "A" in row_text and current_shuffled_opts:
+                # سطر الخيارات
+                elif "A" in full_row and current_shuffled_opts:
                     opt_map = {'A': current_shuffled_opts[0], 'B': current_shuffled_opts[1], 'C': current_shuffled_opts[2], 'D': current_shuffled_opts[3], 'E': current_shuffled_opts[4]}
                     for i in range(len(cells)):
-                        cell_text = cells[i].text.strip().replace(",", "")
-                        if cell_text in opt_map:
-                            if i + 1 < len(cells):
-                                next_cell = cells[i+1]
-                                next_cell.text = opt_map[cell_text]
-                                for p in next_cell.paragraphs: p.alignment = 2 
+                        ct = cells[i].text.strip().replace(",", "")
+                        if ct in opt_map and i+1 < len(cells):
+                            cells[i+1].text = opt_map[ct]
+                            for p in cells[i+1].paragraphs: p.alignment = 2
                     mcq_idx += 1
                     current_shuffled_opts = None
 
-        # الصح والخطأ
-        else:
-            is_tf = False
+        # تعبئة الصح والخطأ
+        elif "(" in row_txt_sample and ")" in row_txt_sample and "A" not in row_txt_sample:
             for row in table.rows:
-                if "(" in "".join([c.text for c in row.cells]): is_tf = True; break
-            if is_tf:
-                for row in table.rows:
-                    if tf_idx < len(final_tf):
-                        full_row = "".join([c.text for c in row.cells])
-                        if "..." in full_row and "(" in full_row:
-                             for cell in row.cells:
-                                for p in cell.paragraphs:
-                                    if "..." in p.text:
-                                        p.text = re.sub(r'\.{3,}', final_tf[tf_idx], p.text)
-                             tf_idx += 1
+                if tf_idx < len(final_tf):
+                    full_row = "".join([c.text for c in row.cells])
+                    if "..." in full_row and "(" in full_row:
+                         for cell in row.cells:
+                            for p in cell.paragraphs:
+                                if "..." in p.text:
+                                    p.text = re.sub(r'\.{3,}', final_tf[tf_idx], p.text)
+                         tf_idx += 1
 
     set_document_font_size(doc, 10)
     buffer = BytesIO()
@@ -199,22 +196,20 @@ uploaded_file = st.file_uploader("1. ارفع ملف بنك الأسئلة", typ
 if uploaded_file:
     all_mcq, all_tf = read_questions(uploaded_file)
     if not all_mcq and not all_tf:
-        st.error("لم يتم العثور على أسئلة!")
+        st.error("لا توجد أسئلة!")
     else:
         st.success(f"المتوفر: {len(all_mcq)} اختياري، {len(all_tf)} صح وخطأ.")
         st.markdown("---")
-        
-        col1, col2 = st.columns(2)
-        with col1:
-            mcq_count = st.number_input("عدد الاختيارات المطلوب", 0, len(all_mcq), min(20, len(all_mcq)))
-        with col2:
-            tf_count = st.number_input("عدد الصح والخطأ المطلوب", 0, len(all_tf), min(10, len(all_tf)))
+        c1, c2 = st.columns(2)
+        with c1:
+            mcq_count = st.number_input("عدد الاختيارات", 0, len(all_mcq), min(20, len(all_mcq)))
+        with c2:
+            tf_count = st.number_input("عدد الصح والخطأ", 0, len(all_tf), min(10, len(all_tf)))
             
         if st.button("توليد الامتحان"):
             try:
-                # نرسل الأرقام المطلوبة للدالة لتقوم بالتوسيع
                 final_file = generate_exam(all_mcq, all_tf, TEMPLATE_FILE, mcq_count, tf_count)
-                st.download_button("📥 تحميل الامتحان", final_file, "Exam_Expanded.docx", "application/vnd.openxmlformats-officedocument.wordprocessingml.document")
-                st.success("تم توسيع القالب وتعبئة الأسئلة بنجاح!")
+                st.download_button("📥 تحميل الملف", final_file, "Exam_Fixed.docx", "application/vnd.openxmlformats-officedocument.wordprocessingml.document")
+                st.success("تم التوليد بنجاح!")
             except Exception as e:
                 st.error(f"خطأ: {e}")
