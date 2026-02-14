@@ -1,7 +1,7 @@
 import streamlit as st
 from docx import Document
-from docx.shared import Pt
-from docx.enum.text import WD_ALIGN_PARAGRAPH
+from docx.shared import Pt, Inches
+from docx.enum.text import WD_ALIGN_PARAGRAPH, WD_PARAGRAPH_ALIGNMENT
 import copy
 import random
 from io import BytesIO
@@ -12,16 +12,21 @@ st.title("نظام توليد الأسئلة الامتحانية")
 
 TEMPLATE_FILE = 'نموذج الاسئلة 30سؤال.docx' 
 
-# --- دالة صارمة لضبط المحاذاة والاتجاه لليمين ---
+# --- دالة "القبضة الحديدية" للمحاذاة ---
 def force_rtl(paragraph):
-    """تجبر الفقرة على المحاذاة لليمين واتجاه النص العربي"""
-    # 1. ضبط المحاذاة لليمين (أهم خطوة لمشكلتك)
+    """تجبر الفقرة على المحاذاة لليمين مع إزالة أي هوامش تعيق ذلك"""
+    # 1. إزالة أي مسافات بادئة (Indents) قد تدفع النص لليسار
+    paragraph.paragraph_format.left_indent = None
+    paragraph.paragraph_format.right_indent = None
+    paragraph.paragraph_format.first_line_indent = None
+    
+    # 2. ضبط المحاذاة لليمين بقوة
     paragraph.alignment = WD_ALIGN_PARAGRAPH.RIGHT
     
-    # 2. ضبط اتجاه النص (يمين لليسار) لضمان ترتيب الكلمات
+    # 3. إخبار الوورد أن الفقرة عربية
     paragraph.paragraph_format.bidi = True
     
-    # 3. التأكد من أن الخط معرف كعربي
+    # 4. تعميم الخط العربي على كل محتويات الفقرة
     if paragraph.runs:
         for run in paragraph.runs:
             run.font.rtl = True
@@ -129,7 +134,7 @@ def generate_exam(mcq_data, tf_data, template_path, target_mcq_count, target_tf_
             if target_tf_count > current_slots:
                 expand_tf_table(table, current_slots, target_tf_count)
 
-    # === المرحلة 2: التعبئة مع فرض المحاذاة لليمين ===
+    # === المرحلة 2: التعبئة والمحاذاة الصارمة ===
     for table in doc.tables:
         if is_header_table(table): continue
 
@@ -145,7 +150,7 @@ def generate_exam(mcq_data, tf_data, template_path, target_mcq_count, target_tf_
                 cells = row.cells
                 full_row = "".join([c.text for c in cells])
                 
-                # --- أ) تعبئة السؤال (تم إضافة force_rtl هنا) ---
+                # أ) سؤال الاختياري
                 if "..." in full_row and "A" not in full_row:
                     if mcq_idx < len(final_mcq):
                         current_opts = final_mcq[mcq_idx]['opts']
@@ -156,9 +161,9 @@ def generate_exam(mcq_data, tf_data, template_path, target_mcq_count, target_tf_
                             for p in cell.paragraphs:
                                 if "..." in p.text:
                                     p.text = re.sub(r'\.{3,}', q_text, p.text)
-                                    force_rtl(p) # <--- هذا السطر سيجبر السؤال أن يكون يميناً
+                                    force_rtl(p) # <--- إجبار المحاذاة لليمين
                 
-                # --- ب) تعبئة الخيارات ---
+                # ب) خيارات الاختياري
                 elif "A" in full_row and current_shuffled_opts:
                     opt_map = {'A': current_shuffled_opts[0], 'B': current_shuffled_opts[1], 'C': current_shuffled_opts[2], 'D': current_shuffled_opts[3], 'E': current_shuffled_opts[4]}
                     for i in range(len(cells)):
@@ -167,7 +172,7 @@ def generate_exam(mcq_data, tf_data, template_path, target_mcq_count, target_tf_
                             target_cell = cells[i+1]
                             target_cell.text = opt_map[ct]
                             for p in target_cell.paragraphs:
-                                force_rtl(p) # تطبيق المحاذاة على الخيارات أيضاً
+                                force_rtl(p)
                     mcq_idx += 1
                     current_shuffled_opts = None
 
@@ -181,7 +186,7 @@ def generate_exam(mcq_data, tf_data, template_path, target_mcq_count, target_tf_
                             for p in cell.paragraphs:
                                 if "..." in p.text:
                                     p.text = re.sub(r'\.{3,}', final_tf[tf_idx], p.text)
-                                    force_rtl(p) # <--- تطبيق المحاذاة على سؤال الصح والخطأ
+                                    force_rtl(p) # <--- إجبار المحاذاة لليمين
                          tf_idx += 1
 
     set_document_font_size(doc, 10)
@@ -210,7 +215,7 @@ if uploaded_file:
         if st.button("توليد الامتحان"):
             try:
                 final_file = generate_exam(all_mcq, all_tf, TEMPLATE_FILE, mcq_count, tf_count)
-                st.download_button("📥 تحميل الملف", final_file, "Exam_Right_Aligned.docx", "application/vnd.openxmlformats-officedocument.wordprocessingml.document")
+                st.download_button("📥 تحميل الملف", final_file, "Exam_RTL_Aligned.docx", "application/vnd.openxmlformats-officedocument.wordprocessingml.document")
                 st.success("تم التوليد بنجاح!")
             except Exception as e:
                 st.error(f"خطأ: {e}")
